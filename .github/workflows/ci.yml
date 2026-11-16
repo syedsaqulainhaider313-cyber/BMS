@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-build:
+    name: Frontend Build & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Compile and build production assets
+        working-directory: frontend
+        run: npm run build
+
+      - name: Archive compiled frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 1
+
+  backend-test:
+    name: Backend Lint, Test Suite & Drills
+    needs: frontend-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Download compiled frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Install backend and test dependencies
+        working-directory: backend
+        run: python -m pip install -e ".[dev]"
+
+      - name: Ruff code quality & formatting checks
+        working-directory: backend
+        run: ruff check .
+
+      - name: Pytest comprehensive automated test suite (36 tests)
+        working-directory: backend
+        run: pytest tests/
+
+      - name: Security and configuration audit drill
+        working-directory: backend
+        run: python scripts/security_audit.py
+
+      - name: Local database backup and isolated restore drill
+        working-directory: backend
+        run: python scripts/backup_drill.py
+
+      - name: Synthetic staging 10-phase end-to-end drill
+        working-directory: backend
+        run: python scripts/staging_e2e_drill.py
+
+      - name: Offline PostgreSQL transactional migration DDL verification
+        working-directory: backend
+        run: alembic -c alembic.ini upgrade head --sql
+
+  docker-build:
+    name: Multi-Stage Container Image Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: actions/setup-buildx-action@v3
+
+      - name: Build multi-stage production image
+        run: docker build -t bms:production .

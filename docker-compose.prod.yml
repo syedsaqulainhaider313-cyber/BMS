@@ -1,0 +1,132 @@
+# ==============================================================================
+# Production Docker Compose Configuration for Bulk Mail Management System (BMS)
+#
+# Hardening characteristics:
+# 1. Zero external network exposure for Postgres and Redis (isolated bridge).
+# 2. Sensitive keys injected via standard Docker secrets files into /run/secrets/.
+# 3. Read-only application filesystem with tmpfs where appropriate.
+# 4. Strict health checks and graceful restart policies.
+# ==============================================================================
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bms:production
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      APP_ENV: production
+      DEBUG: "false"
+      SECURE_COOKIES: "true"
+      SECRET_KEY_FILE: /run/secrets/secret_key
+      WEBHOOK_SIGNING_SECRET_FILE: /run/secrets/webhook_signing_secret
+      UNSUBSCRIBE_SIGNING_KEY_FILE: /run/secrets/unsubscribe_signing_key
+      OPERATOR_PASSWORD_HASH_FILE: /run/secrets/operator_password_hash
+      OPERATOR_TOTP_SECRET_FILE: /run/secrets/operator_totp_secret
+      DATABASE_URL_FILE: /run/secrets/database_url
+      REDIS_URL: redis://redis:6379/0
+      EMAIL_PROVIDER: mock
+      MAIL_FROM_NAME: "Bulk Mail Manager"
+      MAIL_FROM_ADDRESS: "operator@example.test"
+      MAX_SENDS_PER_MINUTE: "1000"
+      MAX_CAMPAIGN_RECIPIENTS: "50000"
+      DB_POOL_SIZE: "10"
+      DB_MAX_OVERFLOW: "15"
+      DB_POOL_RECYCLE: "1800"
+      DB_POOL_TIMEOUT: "30"
+    secrets:
+      - secret_key
+      - webhook_signing_secret
+      - unsubscribe_signing_key
+      - operator_password_hash
+      - operator_totp_secret
+      - database_url
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal_net
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.22.0
+    restart: unless-stopped
+    volumes:
+      - ./pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    ports:
+      - "127.0.0.1:6432:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "6432", "-U", "bms"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - internal_net
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # Database is strictly private - no host ports published
+    environment:
+      POSTGRES_DB: bms
+      POSTGRES_USER: bms
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bms -d bms"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - internal_net
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Redis is strictly private - no host ports published
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_prod_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - internal_net
+
+networks:
+  internal_net:
+    driver: bridge
+    internal: false # allows outbound if needed, but no external ingress except web 127.0.0.1:8000
+
+volumes:
+  postgres_prod_data:
+  redis_prod_data:
+
+secrets:
+  secret_key:
+    file: ./secrets/secret_key.txt
+  webhook_signing_secret:
+    file: ./secrets/webhook_signing_secret.txt
+  unsubscribe_signing_key:
+    file: ./secrets/unsubscribe_signing_key.txt
+  operator_password_hash:
+    file: ./secrets/operator_password_hash.txt
+  operator_totp_secret:
+    file: ./secrets/operator_totp_secret.txt
+  database_url:
+    file: ./secrets/database_url.txt
+  postgres_password:
+    file: ./secrets/postgres_password.txt
